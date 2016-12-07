@@ -196,6 +196,19 @@ public:
                                               "with --configsvr"));
         }
 
+        if (dbname == "admin" && txn->getClient()->isVipMode() &&
+                !AuthorizationSession::get(txn->getClient())->hasAuthByBuiltinUser()) {
+            std::string vip;
+            int vport = 0;
+            uint32_t vid = 0;
+            txn->getClient()->isVipMode(vip, vport, vid);
+            log() << "unauthorized command dropDatabase " << dbname
+                << " from " << vip << ":" << vport << "@" << vid << endl;
+            return appendCommandStatus(result,
+                                       Status(ErrorCodes::IllegalOperation,
+                                              "Cannot drop 'admin' database"));
+        }
+
         if ((repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
              repl::ReplicationCoordinator::modeNone) &&
             (dbname == "local")) {
@@ -528,10 +541,10 @@ public:
                      string& errmsg,
                      BSONObjBuilder& result) {
         if (cmdObj.hasField("autoIndexId")) {
-            const char* deprecationWarning =
-                "the autoIndexId option is deprecated and will be removed in a future release";
-            warning() << deprecationWarning;
-            result.append("note", deprecationWarning);
+            if (!cmdObj["autoIndexId"].trueValue()) {
+                errmsg = "autoIndexId option cannot be false in replica set";
+                return false;
+            }
         }
         return appendCommandStatus(result, createCollection(txn, dbname, cmdObj));
     }

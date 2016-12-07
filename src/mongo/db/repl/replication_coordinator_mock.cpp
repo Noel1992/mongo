@@ -369,6 +369,12 @@ bool ReplicationCoordinatorMock::isV1ElectionProtocol() {
 
 void ReplicationCoordinatorMock::summarizeAsHtml(ReplSetHtmlSummary* output) {}
 
+void ReplicationCoordinatorMock::setNetVip(const std::vector<HostAndPort> &vips) {}
+
+Status ReplicationCoordinatorMock::setNetVip(const std::vector<std::string> &vipsString) { return Status::OK(); }
+
+std::vector<HostAndPort> ReplicationCoordinatorMock::getNetVip() const { return std::vector<HostAndPort>(); }
+
 long long ReplicationCoordinatorMock::getTerm() {
     return OpTime::kInitialTerm;
 }

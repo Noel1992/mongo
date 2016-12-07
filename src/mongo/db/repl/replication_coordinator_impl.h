@@ -292,6 +292,12 @@ public:
 
     virtual void summarizeAsHtml(ReplSetHtmlSummary* s) override;
 
+    virtual void setNetVip(const std::vector<HostAndPort> &vips);
+
+    virtual Status setNetVip(const std::vector<std::string> &netVipString);
+
+    virtual std::vector<HostAndPort> getNetVip() const;
+
     virtual void dropAllSnapshots() override;
     /**
      * Get current term from topology coordinator
@@ -1391,6 +1397,12 @@ private:
 
     // Cached copy of the current config protocol version.
     AtomicInt64 _protVersion;  // (S)
+
+    // Net VIP ip list
+    // just storage and query
+    mutable boost::mutex _netVipMutex;
+    std::vector<HostAndPort> _netVip;
+
 };
 
 }  // namespace repl

@@ -35,6 +35,7 @@
 
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
@@ -85,6 +86,7 @@
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
+#include "mongo/logger/logger.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/process_id.h"
 #include "mongo/rpc/command_reply_builder.h"
@@ -398,6 +400,43 @@ static void receivedQuery(OperationContext* txn,
         audit::logQueryAuthzCheck(client, nss, q.query, status.code());
         uassertStatusOK(status);
 
+        // Builtin user support, filter builitin users for query
+        if (nss == std::string("admin.system.users") &&
+                !AuthorizationSession::get(client)->hasAuthByBuiltinAdmin()) {
+            // valid query may have following formats
+            // db.collection.find({x: 1})
+            // db.collection.find({$query: {x: 1}})
+            // db.collection.find({query: {x: 1}})
+            std::string queryName = "query";
+            BSONElement queryField = q.query[queryName];
+            if (!queryField.isABSONObj()) {
+                queryName = "$query";
+                queryField = q.query[queryName];
+            }
+
+            if (queryField.isABSONObj()) {
+                BSONObjBuilder b(64);
+                b.appendRegex(AuthorizationManager::USER_NAME_FIELD_NAME, UserName::CLOUD_FILTER, "i");
+                BSONObj subQuery = queryField.embeddedObject();
+                BSONObj newSubQuery = BSON("$and" << BSON_ARRAY(subQuery << b.obj()));
+
+                // rebuild new query object
+                BSONObjBuilder nb(64);
+                nb.append(queryName, newSubQuery);
+                BSONForEach( e, q.query ) {
+                    if (!str::equals(queryName.c_str() , e.fieldName())) {
+                        nb.append(e);
+                    }
+                }
+                q.query = nb.obj();
+            } else {
+                BSONObjBuilder b(64);
+                b.appendRegex(AuthorizationManager::USER_NAME_FIELD_NAME, UserName::CLOUD_FILTER, "i");
+                BSONObj query = BSON("$and" << BSON_ARRAY(q.query << b.obj()));
+                q.query = query;
+            }
+        }
+
         dbResponse.exhaustNS = runQuery(txn, q, nss, dbResponse.response);
     } catch (const AssertionException& exception) {
         dbResponse.response.reset();
@@ -600,6 +639,9 @@ void assembleResponse(OperationContext* txn,
         txn->lockState()->getLockerInfo(&lockerInfo);
 
         log() << debug.report(currentOp, lockerInfo.stats);
+        if (debug.executionTime > logThreshold) {
+            audit::logSlowOp(&c, currentOp, lockerInfo.stats);
+        }
     }
 
     if (currentOp.shouldDBProfile(debug.executionTime)) {
@@ -673,6 +715,15 @@ void receivedUpdate(OperationContext* txn, const NamespaceString& nsString, Mess
         AuthorizationSession::get(client)->checkAuthForUpdate(nsString, query, toupdate, upsert);
     audit::logUpdateAuthzCheck(client, nsString, query, toupdate, upsert, multi, status.code());
     uassertStatusOK(status);
+
+    // Builtin user support, filter builitin users for update
+    if (nsString == std::string("admin.system.users") &&
+            !AuthorizationSession::get(client)->hasAuthByBuiltinAdmin()) {
+        BSONObjBuilder b(64);
+        b.appendRegex(AuthorizationManager::USER_NAME_FIELD_NAME, UserName::CLOUD_FILTER, "i");
+        BSONObj q = BSON("$and" << BSON_ARRAY(query << b.obj()));
+        query = q;
+    }
 
     UpdateRequest request(nsString);
     request.setUpsert(upsert);
@@ -821,6 +872,15 @@ void receivedDelete(OperationContext* txn, const NamespaceString& nsString, Mess
     Status status = AuthorizationSession::get(client)->checkAuthForDelete(nsString, pattern);
     audit::logDeleteAuthzCheck(client, nsString, pattern, status.code());
     uassertStatusOK(status);
+
+    // Builtin user support, filter builitin users for delete
+    if (nsString == std::string("admin.system.users") &&
+            !AuthorizationSession::get(client)->hasAuthByBuiltinAdmin()) {
+        BSONObjBuilder b(64);
+        b.appendRegex(AuthorizationManager::USER_NAME_FIELD_NAME, UserName::CLOUD_FILTER, "i");
+        BSONObj q = BSON("$and" << BSON_ARRAY(pattern << b.obj()));
+        pattern = q;
+    }
 
     DeleteRequest request(nsString);
     request.setQuery(pattern);
@@ -1171,6 +1231,25 @@ void receivedInsert(OperationContext* txn, const NamespaceString& nsString, Mess
         uassertStatusOK(status);
     }
 
+    // Builtin user support, forbid insert builtin user to admin.system.users
+    // first user could be builtin user
+    if (nsString == std::string("admin.system.users") &&
+            !AuthorizationSession::get(txn->getClient())->shouldAllowLocalhost() &&
+            !AuthorizationSession::get(txn->getClient())->hasAuthByBuiltinAdmin()) {
+        for (unsigned int i = 0; i < multi.size(); i++) {
+            std::string userName;
+            Status status = bsonExtractStringField(multi[i], "user", &userName);
+            if (status.isOK() && UserName(userName, "").isBuiltinUser()) {
+                HostAndPort remote = txn->getClient()->getRemote();
+                log() << "unauthorized request to insert admin.system.users from " <<
+                    remote.host() << ":" << remote.port() << endl;
+                Status status(ErrorCodes::Unauthorized, "Unauthorized");
+                audit::logInsertAuthzCheck(txn->getClient(), nsString, multi[i], status.code());
+                uassertStatusOK(status);
+            }
+        }
+    }
+
     const bool keepGoing = d.reservedField() & InsertOption_ContinueOnError;
     {
         ScopedTransaction transaction(txn, MODE_IX);
@@ -1305,6 +1384,9 @@ void exitCleanly(ExitCode code) {
 
 NOINLINE_DECL void dbexit(ExitCode rc, const char* why) {
     audit::logShutdown(&cc());
+
+    log() << "dbexit: going to flush auditlog..." << endl;
+    logger::globalAuditLogDomain()->flush();
 
     log(LogComponent::kControl) << "dbexit: " << why << " rc: " << rc;
 

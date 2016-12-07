@@ -667,6 +667,15 @@ public:
     virtual void summarizeAsHtml(ReplSetHtmlSummary* output) = 0;
 
     /**
+     * Replace hosts with vips, when request from vip.
+     */
+    virtual void setNetVip(const std::vector<HostAndPort> &vips) = 0;
+
+    virtual Status setNetVip(const std::vector<std::string> &vipsString) = 0;
+
+    virtual std::vector<HostAndPort> getNetVip() const = 0;
+
+    /**
      * Returns the current term.
      */
     virtual long long getTerm() = 0;

@@ -1302,6 +1302,12 @@ public:
 
         CollectionMetadataPtr collMetadata;
 
+        // Builtin user support, forbid mapReduce on admin.system.users
+        Status checkStatus = checkCommands(txn, config.ns);
+        if (!checkStatus.isOK()) {
+            return appendCommandStatus(result, checkStatus);
+        }
+
         // Prevent sharding state from changing during the MR.
         unique_ptr<RangePreserver> rangePreserver;
         {

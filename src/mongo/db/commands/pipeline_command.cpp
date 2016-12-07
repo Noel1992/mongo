@@ -187,6 +187,13 @@ public:
             errmsg = "missing collection name";
             return false;
         }
+
+        // Builtin user support, forbid aggregate on admin.system.users
+        Status checkStatus = checkCommands(txn, ns);
+        if (!checkStatus.isOK()) {
+            return appendCommandStatus(result, checkStatus);
+        }
+
         NamespaceString nss(ns);
 
         intrusive_ptr<ExpressionContext> pCtx = new ExpressionContext(txn, nss);

@@ -222,6 +222,12 @@ public:
 
     virtual void summarizeAsHtml(ReplSetHtmlSummary* output);
 
+    virtual void setNetVip(const std::vector<HostAndPort> &vips);
+
+    virtual Status setNetVip(const std::vector<std::string> &vipsString);
+
+    virtual std::vector<HostAndPort> getNetVip() const;
+
     virtual long long getTerm();
 
     virtual Status updateTerm(OperationContext* txn, long long term);

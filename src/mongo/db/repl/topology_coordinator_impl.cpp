@@ -34,7 +34,6 @@
 
 #include <limits>
 
-#include "mongo/db/audit.h"
 #include "mongo/db/client_basic.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/heartbeat_response_action.h"
